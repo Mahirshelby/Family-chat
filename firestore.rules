@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
+
+    function memberName() {
+      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data.name;
+    }
+
+    // Holds the secret invite code (config/family -> inviteCode). Nobody can read it from the app.
+    match /config/{doc} {
+      allow read, write: if false;
+    }
+
+    match /members/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isMember());
+
+      // Joining only works when the code the person typed matches the real invite code.
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'code', 'joinedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 30
+        && request.resource.data.code == get(/databases/$(database)/documents/config/family).data.inviteCode;
+
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /messages/{id} {
+      allow read: if isMember();
+
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'type', 'text', 'data', 'dur', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.name == memberName()
+        && request.resource.data.type in ['text', 'image', 'voice']
+        && request.resource.data.createdAt == request.time
+        && (!('text' in request.resource.data) || (request.resource.data.text is string && request.resource.data.text.size() <= 3000));
+
+      // Only the sender can delete their own message. Messages can't be edited.
+      allow delete: if isMember() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}
